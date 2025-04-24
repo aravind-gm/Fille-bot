@@ -7,7 +7,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
-import gc  # Garbage collector
 
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -22,56 +21,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Memory-efficient dataset loading
-# 1. Use streaming mode
-# 2. Limit to ~1000 examples (adjust based on your memory constraints)
-# 3. Process data in batches
+dataset = load_dataset("altaidevorg/women-health-mini")
 
-print("Loading dataset in streaming mode...")
-dataset = load_dataset("altaidevorg/women-health-mini", streaming=True)
-conversation_data = []
+conversation_data = [
+    turn["content"]
+    for conv in dataset["train"]
+    for turn in conv["conversations"]
+]
 
-# Limit the number of examples to process
-MAX_EXAMPLES = 1000
-print(f"Processing up to {MAX_EXAMPLES} examples...")
-
-count = 0
-for example in dataset["train"]:
-    # Process conversation from this example
-    for turn in example["conversations"]:
-        conversation_data.append(turn["content"])
-    
-    # Increment counter and check if we've reached the limit
-    count += 1
-    if count >= MAX_EXAMPLES:
-        break
-
-# Free memory
-del dataset
-gc.collect()
-
-print(f"Processed {count} examples, total conversations: {len(conversation_data)}")
-
-print("Loading embedding model...")
 model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
 
-print("Generating embeddings (this may take a while)...")
-# Process embeddings in smaller batches to reduce memory usage
-BATCH_SIZE = 100
-conversation_embeddings = np.zeros((len(conversation_data), 384))  # 384 is the dimension of embeddings
-
-for i in range(0, len(conversation_data), BATCH_SIZE):
-    end_idx = min(i + BATCH_SIZE, len(conversation_data))
-    batch = conversation_data[i:end_idx]
-    batch_embeddings = model.encode(batch)
-    conversation_embeddings[i:end_idx] = batch_embeddings
-    print(f"Processed embeddings: {end_idx}/{len(conversation_data)}")
-    # Force garbage collection after each batch
-    gc.collect()
-
-print("Embeddings generation complete!")
+conversation_embeddings = model.encode(conversation_data)
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+
 
 def get_more_relevant_rsponse(query):
     query_embedding = model.encode([query])
@@ -83,7 +46,7 @@ def get_more_relevant_rsponse(query):
 async def chat_with_bot(user_query:dict):
     prompt = user_query.get("message", "")
 
-    if not prompt:
+    if not prompt :
         return {"response": "Prompt is required!"}
     
     history_response = get_more_relevant_rsponse(prompt)
@@ -117,9 +80,10 @@ async def chat_with_bot(user_query:dict):
         return {
             "response": bot_reply
         }
+
     else:
         return {"response": "Error in fetching the data from groq AI"}
 
-if __name__ == "__main__":
+if __name__ == "__main__" :
      import uvicorn
      uvicorn.run(app, host="0.0.0.0", port=8000)
