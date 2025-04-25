@@ -29,6 +29,8 @@ import python from 'highlight.js/lib/languages/python';
 import { Link, router, useRouter, Stack } from 'expo-router';
 import Constants from 'expo-constants';
 import * as Haptics from 'expo-haptics';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
 
 // Register commonly used languages
 highlightjs.registerLanguage('javascript', javascript);
@@ -46,6 +48,17 @@ const SUGGESTED_QUESTIONS = [
   "Why am I experiencing fatigue during periods?"
 ];
 
+// Daily health tips
+const DAILY_HEALTH_TIPS = [
+  "Staying hydrated can help reduce bloating during your period.",
+  "Regular exercise can help alleviate PMS symptoms.",
+  "Foods rich in iron can help prevent anemia during heavy periods.",
+  "Sleep 7-9 hours to help balance your hormones.",
+  "Stress management techniques can help regulate your cycle.",
+  "Tracking your cycle can help identify patterns and irregularities.",
+  "Regular gynecological check-ups are important for preventive care."
+];
+
 const FilleAI = () => {
   const router = useRouter();
   
@@ -55,12 +68,29 @@ const FilleAI = () => {
   const [inputText, setInputText] = useState('');
   const [inputHeight, setInputHeight] = useState(40);
   const [suggestedQuestions, setSuggestedQuestions] = useState(SUGGESTED_QUESTIONS);
+  const [userName, setUserName] = useState<string>('');
+  const [userHealthMetrics, setUserHealthMetrics] = useState<{
+    lastPeriod: string | null;
+    cycleLength: number;
+    moodToday: string | null;
+    symptomsTracked: { date: string; symptoms: string[] }[];
+  }>({
+    lastPeriod: null,
+    cycleLength: 28,
+    moodToday: null,
+    symptomsTracked: []
+  });
+  const [dailyTip, setDailyTip] = useState("");
+  const [isOnline, setIsOnline] = useState(true);
+  const [offlineResponses, setOfflineResponses] = useState<Record<string, string>>({});
+  const [showFloatingDoctorButton, setShowFloatingDoctorButton] = useState(false);
+  const scrollOffset = useRef(new Animated.Value(0)).current;
   const scrollViewRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
   
   // Animation values
   const welcomeOpacity = useRef(new Animated.Value(1)).current;
-  const centerContentMargin = useRef(new Animated.Value(150)).current;
+  const centerContentMargin = useRef(new Animated.Value(50)).current; // Changed from 150 to 50
   const floatingButtonScale = useRef(new Animated.Value(1)).current;
   const inputContainerAnimation = useRef(new Animated.Value(0)).current;
   
@@ -100,6 +130,83 @@ const FilleAI = () => {
     }).start();
   }, []);
 
+  // Load user's name
+  useEffect(() => {
+    const loadUserName = async () => {
+      try {
+        const storedName = await AsyncStorage.getItem('userName');
+        console.log("Loaded user name from storage:", storedName);
+        if (storedName) {
+          setUserName(storedName);
+        } else {
+          // If no name is found, redirect to sign in
+          console.log("No user name found, redirecting to signin");
+          router.replace('/signin');
+        }
+      } catch (e) {
+        console.error('Failed to load user name:', e);
+      }
+    };
+    
+    loadUserName();
+  }, []);
+
+  // Function to save health metrics
+  const saveHealthMetrics = async (metrics: { lastPeriod: string | null; cycleLength: number; moodToday: string | null; symptomsTracked: Array<{ date: string; symptoms: string[] }> }) => {
+    try {
+      await AsyncStorage.setItem('userHealthMetrics', JSON.stringify(metrics));
+      setUserHealthMetrics(metrics);
+    } catch (e) {
+      console.error('Failed to save health metrics:', e);
+    }
+  };
+
+  // Load health metrics
+  useEffect(() => {
+    const loadHealthMetrics = async () => {
+      try {
+        const metrics = await AsyncStorage.getItem('userHealthMetrics');
+        if (metrics) {
+          setUserHealthMetrics(JSON.parse(metrics));
+        }
+      } catch (e) {
+        console.error('Failed to load health metrics:', e);
+      }
+    };
+    
+    loadHealthMetrics();
+  }, []);
+
+  // Select a random health tip daily
+  useEffect(() => {
+    const tipIndex = new Date().getDate() % DAILY_HEALTH_TIPS.length;
+    setDailyTip(DAILY_HEALTH_TIPS[tipIndex]);
+  }, []);
+
+  // Monitor network status
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener(state => {
+      setIsOnline(state.isConnected ?? false);
+      console.log("Is connected:", state.isConnected);
+    });
+
+    // Load offline responses
+    const loadOfflineData = async () => {
+      try {
+        const savedResponses = await AsyncStorage.getItem('offlineResponses');
+        if (savedResponses) {
+          setOfflineResponses(JSON.parse(savedResponses));
+        }
+      } catch (e) {
+        console.error('Failed to load offline responses:', e);
+      }
+    };
+    
+    loadOfflineData();
+    
+    return () => unsubscribe();
+  }, []);
+
   // Function to handle input height changes
   const updateInputHeight = (height: number) => {
     const newHeight = Math.min(Math.max(40, height), 100);
@@ -118,6 +225,53 @@ const FilleAI = () => {
     });
     
     return marked.parse(text);
+  };
+
+  // Add this function before handleSubmit
+  const analyzeSymptoms = (message: string) => {
+    // Keywords to look for in user messages
+    const symptoms = {
+      pain: ['cramp', 'ache', 'pain', 'sore', 'hurt', 'discomfort'],
+      mood: ['mood', 'angry', 'sad', 'anxious', 'depress', 'irritable', 'emotion'],
+      bleeding: ['bleed', 'flow', 'heavy', 'spot', 'discharge'],
+      fatigue: ['tired', 'exhaust', 'fatigue', 'energy', 'weak'],
+      digestive: ['bloat', 'nausea', 'vomit', 'stomach', 'digest', 'bowel']
+    };
+    
+    const detectedSymptoms: string[] = [];
+    const lowercaseMsg = message.toLowerCase();
+    
+    // Check for symptoms in message
+    Object.entries(symptoms).forEach(([category, keywords]) => {
+      if (keywords.some(keyword => lowercaseMsg.includes(keyword))) {
+        detectedSymptoms.push(category);
+      }
+    });
+    
+    return detectedSymptoms;
+  };
+
+  // Debug function to test navigation
+  const navigateToDoctor = () => {
+    console.log("Attempting to navigate to doctor screen...");
+    try {
+      router.push("/realchat");
+      console.log("Navigation command issued successfully");
+    } catch (error) {
+      console.error("Navigation error:", error);
+      // Fallback navigation method
+      try {
+        router.navigate("/realchat");
+        console.log("Fallback navigation used");
+      } catch (fallbackError) {
+        console.error("Fallback navigation failed:", fallbackError);
+        Alert.alert(
+          "Navigation Error",
+          "Unable to access doctor chat. Please try again.",
+          [{ text: "OK" }]
+        );
+      }
+    }
   };
 
   // User Message Component with enhanced styling
@@ -483,10 +637,55 @@ const FilleAI = () => {
       });
     }
 
+    // Analyze symptoms in the user message
+    const detectedSymptoms = analyzeSymptoms(userMessage);
+    if (detectedSymptoms.length > 0) {
+      console.log("Detected symptoms:", detectedSymptoms);
+      // Store detected symptoms for trends analysis
+      const updatedMetrics = {
+        ...userHealthMetrics,
+        symptomsTracked: [
+          ...userHealthMetrics.symptomsTracked, 
+          { date: new Date().toISOString(), symptoms: detectedSymptoms }
+        ]
+      };
+      saveHealthMetrics(updatedMetrics);
+    }
+
     // Set loading state
     setIsLoading(true);
 
     try {
+      if (!isOnline) {
+        // Show offline message
+        setMessages(prevMessages => [
+          ...prevMessages,
+          { 
+            type: 'computer', 
+            text: "You're currently offline. I have limited functionality, but I'll try to help with basic information."
+          },
+        ]);
+        
+        // Check for cached responses
+        const offlineAnswer = offlineResponses[userMessage.toLowerCase().trim()];
+        if (offlineAnswer) {
+          setMessages(prevMessages => [
+            ...prevMessages,
+            { type: 'computer', text: offlineAnswer }
+          ]);
+        } else {
+          setMessages(prevMessages => [
+            ...prevMessages,
+            { 
+              type: 'computer', 
+              text: "I don't have an offline answer for this question. Please reconnect to the internet for a complete response."
+            }
+          ]);
+        }
+        setIsLoading(false);
+        return;
+      }
+
       const serverUrl = getServerUrl();
       console.log(`Sending request to: ${serverUrl}`);
       
@@ -605,6 +804,21 @@ const FilleAI = () => {
     }
   }, [messages]);
 
+  useEffect(() => {
+    // Show floating button after user has scrolled a bit or when in conversation
+    scrollOffset.addListener(({ value }) => {
+      if (value > 100 || isSearchSubmitted) {
+        setShowFloatingDoctorButton(true);
+      } else {
+        setShowFloatingDoctorButton(false);
+      }
+    });
+    
+    return () => {
+      scrollOffset.removeAllListeners();
+    };
+  }, [isSearchSubmitted]);
+
   return (
     <>
       {/* Add Stack.Screen options to hide the header */}
@@ -633,20 +847,27 @@ const FilleAI = () => {
               style={{ 
                 backgroundColor: '#332940', 
                 paddingHorizontal: 12,
-                paddingVertical: 6,
+                paddingVertical: 8,
                 borderRadius: 16,
                 flexDirection: 'row',
-                alignItems: 'center'
+                alignItems: 'center',
+                elevation: 3,
+                zIndex: 10,
+                minWidth: 130,
+                minHeight: 36,
               }}
               onPress={() => {
                 if (Platform.OS !== 'web') {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
                 }
-                router.push("/realchat");
+                console.log("Sign In button pressed");
+                router.push("/signin");
               }}
+              activeOpacity={0.7}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             >
-              <MaterialCommunityIcons name="doctor" size={16} color="#FF9D4F" style={{ marginRight: 6 }} />
-              <Text style={{ color: '#FF9D4F', fontSize: 13 }}>Talk to Doctor</Text>
+              <FontAwesome5 name="user" size={16} color="#FF9D4F" style={{ marginRight: 6 }} />
+              <Text style={{ color: '#FF9D4F', fontSize: 14, fontWeight: '500' }}>Sign In</Text>
             </TouchableOpacity>
           </View>
           
@@ -668,7 +889,9 @@ const FilleAI = () => {
                     opacity: welcomeOpacity,
                     alignItems: 'center',
                     padding: 20,
+                    paddingTop: 0, // Add this line to reduce padding at the top
                   }}>
+                    {/* Rest of the welcome message content */}
                     <View style={{ 
                       width: 100, 
                       height: 100, 
@@ -690,7 +913,7 @@ const FilleAI = () => {
                       fontSize: 28,
                       textAlign: 'center'
                     }}>
-                      Hello, GIRL!
+                      Hello, {userName ? userName.charAt(0).toUpperCase() + userName.slice(1) : 'GIRL'}!
                     </Text>
                     <Text style={{ 
                       color: '#AAAAAA', 
@@ -702,6 +925,24 @@ const FilleAI = () => {
                     }}>
                       I'm your health companion. Ready to share your problems and feelings today?
                     </Text>
+                    <View style={{
+                      backgroundColor: 'rgba(255,123,0,0.1)', 
+                      borderRadius: 12,
+                      padding: 15,
+                      marginTop: 25,
+                      marginHorizontal: 10,
+                      borderLeftWidth: 3,
+                      borderLeftColor: '#FF7B00'
+                    }}>
+                      <Text style={{
+                        color: 'white',
+                        fontSize: 14,
+                        fontStyle: 'italic'
+                      }}>
+                        <Text style={{ fontWeight: 'bold', color: '#FF9D4F' }}>Tip of the day: </Text>
+                        {dailyTip}
+                      </Text>
+                    </View>
                     
                     {/* Suggested Topics */}
                     <Text style={{ color: 'white', marginTop: 30, marginBottom: 15, fontWeight: '600' }}>
@@ -721,9 +962,17 @@ const FilleAI = () => {
                   style={{ 
                     display: isSearchSubmitted ? 'flex' : 'none',
                     paddingHorizontal: 16,
+                    flex: 1,
                   }}
-                  contentContainerStyle={{ paddingBottom: 16 }}
+                  contentContainerStyle={{ 
+                    paddingBottom: 100 // Significantly increased padding to ensure content isn't hidden
+                  }}
                   showsVerticalScrollIndicator={false}
+                  onScroll={Animated.event(
+                    [{ nativeEvent: { contentOffset: { y: scrollOffset } } }],
+                    { useNativeDriver: true }
+                  )}
+                  scrollEventThrottle={16}
                 >
                   {messages.map((message, index) => (
                     (message as { type: string; text: string }).type === 'user' ? (
@@ -819,15 +1068,50 @@ const FilleAI = () => {
             </View>
           </KeyboardAvoidingView>
 
-          {/* Footer */}
-          <View style={{ 
-            paddingBottom: 10, 
-            alignItems: 'center', 
-            borderTopWidth: 1,
-            borderTopColor: 'rgba(255,255,255,0.1)',
-            paddingTop: 10
+          {/* Floating Doctor Button */}
+          {showFloatingDoctorButton && (
+            <TouchableOpacity
+              style={{
+                position: 'absolute',
+                right: 20,
+                bottom: 80,
+                backgroundColor: '#FF7B00',
+                width: 56,
+                height: 56,
+                borderRadius: 28,
+                justifyContent: 'center',
+                alignItems: 'center',
+                elevation: 5,
+                shadowColor: "#000",
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.3,
+                shadowRadius: 3,
+                zIndex: 100,
+              }}
+              onPress={() => {
+                if (Platform.OS !== 'web') {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                }
+                navigateToDoctor();
+              }}
+              activeOpacity={0.8}
+            >
+              <MaterialCommunityIcons name="doctor" size={28} color="white" />
+            </TouchableOpacity>
+          )}
+
+          {/* Disclaimer text */}
+          <View style={{
+            position: 'absolute',
+            bottom: Platform.OS === 'ios' ? 5 : 3,
+            left: 0,
+            right: 0,
+            alignItems: 'center',
+            paddingVertical: 2,
+            backgroundColor: 'rgba(26, 28, 37, 0.8)', // Added background for better visibility
+            zIndex: 50, // Make sure it appears above other elements
           }}>
-            <Text style={{ color: 'grey', fontSize: 12 }}>
+            <Text style={{ color: 'grey', fontSize: 9 }}>
               For informational purposes. Consult a healthcare professional.
             </Text>
           </View>
